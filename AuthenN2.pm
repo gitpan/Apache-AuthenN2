@@ -6,184 +6,164 @@ use vars qw/%ENV/;
 use Authen::Smb;
 use Net::NISPlus::Table;
 
-$Apache::AuthenN2::VERSION = '0.02';
+$Apache::AuthenN2::VERSION = '0.06';
 my $self="Apache::AuthenN2";
 
 sub handler {
 
-  # get request object
-  my $r = shift;
+   # get request object
+   my $r = shift;
 
-  # service only the first internal request
-  return OK unless $r->is_initial_req;
+   # service only the first internal request
+   return OK unless $r->is_initial_req;
 
-  # get password user entered in browser
-  my($res, $sent_pwd) = $r->get_basic_auth_pw;
+   # get password user entered in browser
+   my($res, $sent_pwd) = $r->get_basic_auth_pw;
 
-  # decline if not basic
-  return $res if $res;
+   # decline if not basic
+   return $res if $res;
 
-  # get user name
-  my $name = $r->connection->user;
+   # get user name
+   my $name = $r->connection->user;
 
-  # blank user name would cause problems
-  unless($name){
-    $r->note_basic_auth_failure;
-    $r->log_reason("$self: no username supplied", $r->uri);
-    return AUTH_REQUIRED;
-  }
+   # blank user name would cause problems
+   unless($name){
+      $r->note_basic_auth_failure;
+      $r->log_reason($self . ': no username supplied', $r->uri);
+      return AUTH_REQUIRED;
+   }
 
-  # load apache config vars
-  my $dir_config = $r->dir_config;   
+   # load apache config vars
+   my $dir_config = $r->dir_config;   
 
-  # try nt domain
-
-  # what is the primary domain controller?
-  my $nt_pdc = $r->dir_config('NT_PDC');
-  unless($nt_pdc){
-    $r->log_reason(
-      "$self: configuration error - no NT_PDC", $r->uri
-    );
-  }
-
-  # what is the backup domain controller?
-  my $nt_bdc = $r->dir_config('NT_BDC');
-  unless($nt_bdc){
-    $r->log_reason(
-      "$self: configuration error - no NT_BDC", $r->uri
-    );
-  }
-
-  # how about the domain name?
-  # get domain name if username is qualified
-  my $nt_domain;
-  if ($name =~ /^.*\\/){($nt_domain, $name) = split /\\/, $name}
-  else{
-    $nt_domain = $r->dir_config('NT_Domain');
-    unless($nt_domain){
+   # get nt controllers
+   my $controllers = $r->dir_config('NT_Controllers') || '';
+   $r->log_reason(
+      $self . ': no NT_Controllers specified in config', $r->uri
+   ) unless $controllers;
+   my @controllers = split /\s+/, $controllers;
+   
+   # get nt domain name
+   my @domains;
+   if ($name =~ /^.*\\/){
+      # user-specified domain name
+      @domains = split /\\/, $name;
+      $name = pop @domains;
+   }
+   else{
+      # get list of default domains from config
+      @domains = split /\s+/, $r->dir_config('NT_Default_Domains');
       $r->log_reason(
-        "$self: configuration error - no NT_Domain", $r->uri
-      );
-    }
-  }
+         $self . 
+         ': user did not specify domain, and there are no NT_Default_Domains specified in config', $r->uri
+      ) unless @domains;
+   }
 
-  # call the domain controller
-  my $auth_result = Authen::Smb::authen(
-    $name, $sent_pwd, $nt_pdc, $nt_bdc, $nt_domain
-  );
+   # try nt
+   my ($pdc, $bdc);
+   foreach my $domain (@domains){
+      foreach my $controller (@controllers){
+         ($pdc, $bdc) = split /:/, $controller;
+         $bdc = $pdc unless $bdc;
+         unless (Authen::Smb::authen($name, $sent_pwd, $pdc, $bdc, $domain)){
+            $r->push_handlers(PerlAuthzHandler => \&authz);
+            return OK;
+         }
+      }
+   }
 
-  if($auth_result == 0){
-    # username/password match
-    $r->push_handlers(PerlAuthzHandler => \&authz);
-    return OK;
-  }
-
-  if($auth_result == 1){
-    # obscure domain controller error
-    $r->log_reason("$self: NT_SERVER_ERROR", $r->uri);
-  }
-
-  elsif($auth_result == 2){
-    # more obscure domain controller error
-    $r->log_reason("$self: NT_PROTOCOL_ERROR", $r->uri);
-  }
-
-  # ignore auth_result 3 because it just means the user failed to
-  # supply the correct password, and we are going to fall through to
-  # a nis+ attempt anyway
-
-  # try nis+
-
-  # get passwd table name
-  my $passwd_table = $dir_config->get("NISPlus_Passwd_Table");
-
-  # get user password entry
-  my $pwd_table = Net::NISPlus::Table->new($passwd_table);
-  unless ($pwd_table){
-    $r->note_basic_auth_failure;
-    $r->log_reason("$self: cannot get nis+ passwd table", $r->uri);
-    return AUTH_REQUIRED;
-  }
-  my $pwd = "";
-  my $group = "";
-  foreach ($pwd_table->list()){
-    if(@{$_}[0] eq $name){
-      $pwd = @{$_}[1];
-      $group = @{$_}[3];
+   # try nis+
+   # get passwd table name
+   my $passwd_table = $dir_config->get('NISPlus_Passwd_Table');
+   # get user password entry
+   my $pwd_table = Net::NISPlus::Table->new($passwd_table);
+   unless ($pwd_table){
+      $r->note_basic_auth_failure;
+      $r->log_reason($self . ': cannot get nis+ passwd table', $r->uri);
+      return AUTH_REQUIRED;
+   }
+   my $pwd = '';
+   my $group = '';
+   # look for name match
+   foreach ($pwd_table->lookup('[name=' . $name . ']')){
+      $pwd = $_->{'passwd'};
+      $group = $_->{'gid'};
       last;
-    }
-  }
+   }
+   # stash group id lookup for authorization check 
+   $r->notes($name . 'Group', $group);
+   unless($pwd){
+      $r->note_basic_auth_failure;
+      $r->log_reason(
+         $self . ': user ' . $name .
+         ' failed to authenticate in the nt domain(s) ' .
+         join(' ', @domains) . ', and is not in ' . $passwd_table .
+         ', either', $r->uri
+      );
+      return AUTH_REQUIRED;
+   }
+   unless(crypt($sent_pwd, $pwd) eq $pwd) {
+      $r->note_basic_auth_failure;
+      $r->log_reason(
+         $self . ': user ' . $name .
+         ' failed to authenticate in the nt domain(s) ' .
+         join(' ', @domains) . ', or ' . $passwd_table, $r->uri
+      );
+      return AUTH_REQUIRED;
+   }
 
-  #stash group id lookup for authorization check 
-  $r->notes($name."Group", $group);
-
-  unless($pwd){
-    $r->note_basic_auth_failure;
-    $r->log_reason(
-      "$self: user $name failed to authenticate in the $nt_domain domain, and is not in $passwd_table, either", $r->uri
-    );
-    return AUTH_REQUIRED;
-  }
-
-  unless(crypt($sent_pwd, $pwd) eq $pwd) {
-    $r->note_basic_auth_failure;
-    $r->log_reason(
-      "$self: user $name failed to authenticate in the $nt_domain domain or $passwd_table", $r->uri
-    );
-    return AUTH_REQUIRED;
-  }
-
-  $r->push_handlers(PerlAuthzHandler => \&authz);
-  return OK;
+   $r->push_handlers(PerlAuthzHandler => \&authz);
+   return OK;
 }
 
 sub authz {
  
- # get request object
-  my $r = shift;
-  my $requires = $r->requires;
-  return OK unless $requires;
+   # get request object
+   my $r = shift;
+   my $requires = $r->requires;
+   return OK unless $requires;
 
-  # get user name
-  my $name = $r->connection->user;
+   # get user name
+   my $name = $r->connection->user;
 
-  # get group table name
-  my $dir_config = $r->dir_config;   
-  my $group_table=$dir_config->get("NISPlus_Group_Table");
+   # get group table name
+   my $dir_config = $r->dir_config;   
+   my $group_table=$dir_config->get('NISPlus_Group_Table');
 
-  for my $req (@$requires) {
-    my($require, @rest) = split /\s+/, $req->{requirement};
+   for my $req (@$requires) {
+      my($require, @rest) = split /\s+/, $req->{requirement};
 
-    #ok if user is simply authenticated
-    if($require eq "valid-user"){return OK}
+      # ok if user is simply authenticated
+      if($require eq 'valid-user'){return OK}
 
-    # ok if user is one of these users
-    elsif($require eq "user") {return OK if grep $name eq $_, @rest}
+      # ok if user is one of these users
+      elsif($require eq 'user') {return OK if grep $name eq $_, @rest}
 
-    # ok if user is member of a required group. warning: this will fail 
-    # if user is not in the nis+ domain, because there is no current
-    # concept of nt domain groups in Authen::Smb
-    elsif($require eq "group") {
-      my $group_table = Net::NISPlus::Table->new($group_table);
-      unless ($group_table){
-        $r->note_basic_auth_failure;
-        $r->log_reason("$self: cannot get nis+ group table", $r->uri);
-        return AUTH_REQUIRED;
+      # ok if user is member of a required group. warning: this will fail 
+      # if user is not in the nis+ domain, because there is no current
+      # concept of nt domain groups in Authen::Smb
+      elsif($require eq 'group') {
+         my $group_table = Net::NISPlus::Table->new($group_table);
+         unless ($group_table){
+            $r->note_basic_auth_failure;
+            $r->log_reason($self . ': cannot get nis+ group table', $r->uri);
+            return AUTH_REQUIRED;
+         }
+         my %groups_to_gids;
+         foreach ($group_table->list()){$groups_to_gids{@{$_}[0]} = @{$_}[2]}
+         for my $group (@rest) {
+            next unless exists $groups_to_gids{$group};
+            return OK if $r->notes($name . 'Group') == $groups_to_gids{$group};
+         }
       }
-      my %groups_to_gids;
-      foreach ($group_table->list()){$groups_to_gids{@{$_}[0]} = @{$_}[2]}
-      for my $group (@rest) {
-        next unless exists $groups_to_gids{$group};
-        return OK if $r->notes($name."Group") == $groups_to_gids{$group};
-      }
-    }
-  }
+   }
 
-  $r->note_basic_auth_failure;
-  $r->log_reason(
-    "$self: user $name not member of required group in $group_table", $r->uri
-  );
-  return AUTH_REQUIRED;
+   $r->note_basic_auth_failure;
+   $r->log_reason(
+      $self . ': user ' . $name . 
+      ' not member of required group in ' . $group_table, $r->uri
+   );
+   return AUTH_REQUIRED;
 
 }
 
@@ -199,36 +179,95 @@ Apache::AuthenN2 - Authenticate into the NT and NIS+ domains
 
 =head1 SYNOPSIS
 
- #httpd.conf
- <Location>
-   AuthName "your nt or nis+ account"
-   AuthType Basic
-   PerlSetVar NISPlus_Passwd_Table passwd.org_dir.yoyodyne.com
-   PerlSetVar NISPlus_Group_Table group.org_dir.yoyodyne.com
-   PerlSetVar NT_Domain domain_name
-   PerlSetVar NT_PDC primary_server
-   PerlSetVar NT_BDC backup_server
-   PerlAuthenHandler Apache::AuthenN2
-   require group eng
-   require user john larry
- </Location>
+Allow windows and unix users to use their familiar credentials to
+gain authenticated access to restricted applications and files
+offered via apache.
+
+   #httpd.conf
+   <Files *challenge*>
+      AuthName 'your nt or nis+ account'
+      AuthType Basic
+      PerlSetVar NISPlus_Passwd_Table passwd.org_dir.yoyodyne.com
+      PerlSetVar NISPlus_Group_Table group.org_dir.yoyodyne.com
+      PerlSetVar NT_Default_Domains 'eng corporate'
+      PerlSetVar NT_Controllers 'bapdc:babdc njpdc:njbdc'
+      PerlAuthenHandler Apache::AuthenN2
+      require group eng
+      require user john larry
+   </Files>
 
 =head1 DESCRIPTION
 
-A quick fix to allow two otherwise incompatible populations in the
-enterprise (windows users and unix users) authenticated access to
-restricted applications offered via apache.
+Authenticate to one or more pdc:bdc controller pairs; these can be
+true nt controllers or properly configured samba servers.  Only one
+pdc:bdc pair is required by the module; you can add pairs to increase
+reliability, or to circumvent domain trust wars.  If the user has
+specified a domain, e.g., sales\john, then just try against that
+domain; if no domain was specified by the user, try all of the
+default domains listed in the above config.  Failing nt
+authentication, try nis+.  This order (nt then nis+) is simply to
+boost average apparent performance because the nt population is much
+larger than the unix population at the author's company.  If your
+population has an opposite demographic, feel free to reverse the
+order of checking.
 
-Authenticate to an nt domain; failing that, try a nis+ domain.
+Note that this scheme is quite permissive.  Valid nt credentials
+against any of the controllers or domains, or valid nis+ credentials
+will allow access.  This multiplies exposure to poorly selected
+passwords.
 
-Note that this scheme is quite permissive.  Either a valid nt
-username/password, or a valid nis+ username/password will allow
-access.  This causes double exposure to poorly selected passwords.
+<Files *challenge*> is just a way of specifying which files should be
+protected by this authenticator.  In this example, a script named
+newbug-challenge.pl would be protected, regardless of where it is
+located in the apache htdocs or cgi directories.  If you prefer, you
+can use the simpler <Location> directive to protect a particular file
+or directory.
+
+Instead of requiring specific groups or users, you could just
+'require valid-user'.
 
 The nt part requires the Authen::Smb module.  When Authen::Smb
 supports group authentication, I will add it to this module.
 
 The nis+ part requires the Net::NISPlus module.
+
+You just read all you need to know to get started -- but you should
+read on if you care about nt/nis+ server load, network performance,
+or response time (as the user perceives it).
+
+_Every_ time a protected file is requested, this handler is invoked.
+Depending on your configuration (how many controllers and default
+domains you specify), and where the matching credentials are, it can
+take a while.  This adds to your network and server load, as well as
+bothering some users with the wait.  It makes sense to cache valid
+credentials in memory so as to avoid invoking this expensive module
+every time.  Luckily, Jason Bodnar already created AuthenCache.
+Although written with AuthenDBI in mind, it works beautifully in this
+case as well.  It is _highly_ recommended.  After installing it, you
+need a few more lines in httpd.conf; to expand on the above example:
+
+   PerlModule Apache::AuthenCache
+   <Files *challenge*>
+      AuthName 'your nt or nis+ account'
+      AuthType Basic
+      PerlSetVar NISPlus_Passwd_Table passwd.org_dir.yoyodyne.com
+      PerlSetVar NISPlus_Group_Table group.org_dir.yoyodyne.com
+      PerlSetVar NT_Default_Domains 'eng corporate'
+      PerlSetVar NT_Controllers 'bapdc:babdc nypdc:nybdc'
+      PerlSetVar AuthenCache_casesensitive off
+      PerlAuthenHandler Apache::AuthenCache Apache::AuthenN2 Apache::AuthenCache::manage_cache
+      require group eng
+      require user john larry
+   </Files>
+
+A couple of tips about AuthenCache: 1 comment out the $r->warn lines
+that echo the password to the apache error log (they are fine for
+debugging but not good for production), and 2 keep in mind that the
+cache has to be established separately in each current httpd child
+process, so it does not appear to be working consistently until all
+the children know about the user.  This is nothing to panic about; we
+are just playing the odds: the more active the user is, the more they
+will benefit from the caching.
 
 =head1 AUTHOR
 
