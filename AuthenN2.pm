@@ -26,9 +26,6 @@ sub handler {
   # get user name
   my $name = $r->connection->user;
 
-  # be sure username is reasonable
-  $name=~m/(\w+)/; $name=$1;
-
   # blank user name would cause problems
   unless($name){
     $r->note_basic_auth_failure;
@@ -58,11 +55,16 @@ sub handler {
   }
 
   # how about the domain name?
-  my $nt_domain = $r->dir_config('NT_Domain');
-  unless($nt_domain){
-    $r->log_reason(
-      "$self: configuration error - no NT_Domain", $r->uri
-    );
+  # get domain name if username is qualified
+  my $nt_domain;
+  if ($name =~ /^.*\\/){($nt_domain, $name) = split /\\/, $name}
+  else{
+    $nt_domain = $r->dir_config('NT_Domain');
+    unless($nt_domain){
+      $r->log_reason(
+        "$self: configuration error - no NT_Domain", $r->uri
+      );
+    }
   }
 
   # call the domain controller
@@ -112,23 +114,25 @@ sub handler {
     }
   }
 
+  #stash group id lookup for authorization check 
+  $r->notes($name."Group", $group);
+
   unless($pwd){
     $r->note_basic_auth_failure;
     $r->log_reason(
-      "$self: user $name failed to authenticate in the $nt_domain, and is not in $passwd_table, either", $r->uri
+      "$self: user $name failed to authenticate in the $nt_domain domain, and is not in $passwd_table, either", $r->uri
     );
     return AUTH_REQUIRED;
   }
 
-  #stash group id lookup for authorization check 
-  $r->notes($name."Group", $group);
   unless(crypt($sent_pwd, $pwd) eq $pwd) {
     $r->note_basic_auth_failure;
     $r->log_reason(
-      "$self: user $name failed to authenticate in the $nt_domain or $passwd_table", $r->uri
+      "$self: user $name failed to authenticate in the $nt_domain domain or $passwd_table", $r->uri
     );
     return AUTH_REQUIRED;
   }
+
   $r->push_handlers(PerlAuthzHandler => \&authz);
   return OK;
 }

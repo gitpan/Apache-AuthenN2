@@ -1,11 +1,14 @@
 Revision history for Perl extension Apache::AuthenN2.
 
+0.04 1999 may 13 11:55
+   - allow nt domain qualification of username, e.g., "JAPAN\gary"
+
 0.03 1999 apr 13 11:45
-	- gracefully handle error when nis+ tables are unaccessible
+   - gracefully handle error when nis+ tables are unaccessible
 
 0.02 1999 mar 24
-        - now using Net::NISPlus instead of /usr/bin/nismatch.
+   - now using Net::NISPlus instead of /usr/bin/nismatch.
 
 0.01 Wed Dec 16 16:12:39 1998
-	- original version; created by h2xs 1.18
+   - original version; created by h2xs 1.18
 
