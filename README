@@ -31,17 +31,11 @@ DESCRIPTION
     The nt part requires the Authen::Smb module. When Authen::Smb
     supports group authentication, I will add it to this module.
 
-    The nis+ part is pretty lame in that it simply executes
-    "/usr/bin/nismatch" with the appropriate arguments. If exposed
-    to an unruly user base, that part should be rewritten to gather
-    output from an underprivileged child instead of letting the
-    shell get involved. An even better answer would probably be to
-    hook into Net::NISPlus, but I could not figure out how to do
-    that in the few hours I had available.
+    The nis+ part requires the Net::NISPlus module.
 
 AUTHOR
-    valerie at savina dot com (Valerie Delane), based more or less
-    on code shamelessly lifted from Doug MacEachern's
+    valerie at savina dot com (Valerie Delane), originally based
+    more or less on code shamelessly lifted from Doug MacEachern's
     Apache::AuthNIS and Micheal Parkers's Apache::AuthenSMB.
 
 COPYRIGHT
@@ -49,5 +43,5 @@ COPYRIGHT
     modify it under the same terms as Perl itself.
 
 SEE ALSO
-    mod_perl(3), Apache(3), nismatch(1)
+    mod_perl(3), Apache(3)
 

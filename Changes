@@ -1,5 +1,8 @@
 Revision history for Perl extension Apache::AuthenN2.
 
+0.02  1999 mar 24
+        - now using Net::NISPlus instead of /usr/bin/nismatch.
+
 0.01  Wed Dec 16 16:12:39 1998
 	- original version; created by h2xs 1.18
 

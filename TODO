@@ -1,2 +1,1 @@
 - add nt group authentication when it is available in Authen::Authen-Smb
-- use Net::NISPlus instead of calling /usr/bin/nismatch via the shell
