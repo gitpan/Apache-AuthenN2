@@ -1,0 +1,53 @@
+NAME
+    Apache::AuthenN2 - Authenticate into the NT and NIS+ domains
+
+SYNOPSIS
+     #httpd.conf
+     <Location>
+       AuthName "your nt or nis+ account"
+       AuthType Basic
+       PerlSetVar NISPlus_Passwd_Table passwd.org_dir.yoyodyne.com
+       PerlSetVar NISPlus_Group_Table group.org_dir.yoyodyne.com
+       PerlSetVar NT_Domain domain_name
+       PerlSetVar NT_PDC primary_server
+       PerlSetVar NT_BDC backup_server
+       PerlAuthenHandler Apache::AuthenN2
+       require group eng
+       require user john larry
+     </Location>
+
+DESCRIPTION
+    A quick fix to allow two otherwise incompatible populations in
+    the enterprise (windows users and unix users) authenticated
+    access to restricted applications offered via apache.
+
+    Authenticate to an nt domain; failing that, try a nis+ domain.
+
+    Note that this scheme is quite permissive. Either a valid nt
+    username/password, or a valid nis+ username/password will allow
+    access. This causes double exposure to poorly selected
+    passwords.
+
+    The nt part requires the Authen::Smb module. When Authen::Smb
+    supports group authentication, I will add it to this module.
+
+    The nis+ part is pretty lame in that it simply executes
+    "/usr/bin/nismatch" with the appropriate arguments. If exposed
+    to an unruly user base, that part should be rewritten to gather
+    output from an underprivileged child instead of letting the
+    shell get involved. An even better answer would probably be to
+    hook into Net::NISPlus, but I could not figure out how to do
+    that in the few hours I had available.
+
+AUTHOR
+    valerie at savina dot com (Valerie Delane), based more or less
+    on code shamelessly lifted from Doug MacEachern's
+    Apache::AuthNIS and Micheal Parkers's Apache::AuthenSMB.
+
+COPYRIGHT
+    This library is free software; you can redistribute it and/or
+    modify it under the same terms as Perl itself.
+
+SEE ALSO
+    mod_perl(3), Apache(3), nismatch(1)
+
